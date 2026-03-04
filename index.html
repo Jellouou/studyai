@@ -389,16 +389,31 @@ footer { text-align: center; padding: 1.5rem; border-top: 1px solid var(--border
 <footer>STUDYAI — PERSONAL TUTOR & REVIEWER</footer>
 
 <script>
-// Calls our Vercel proxy — no API key needed on client side
-async function callAI(messages, maxTokens=2000){
-  const res = await fetch('/api/chat', {
+// Gemini API — enter your key once on load
+let API_KEY = localStorage.getItem('studyai_key') || '';
+if(!API_KEY){
+  API_KEY = prompt('🔑 Enter your Gemini API key to start:') || '';
+  if(API_KEY) localStorage.setItem('studyai_key', API_KEY);
+}
+
+async function callAI(messages, maxTokens=4000){
+  // Convert messages format to Gemini format
+  const contents = messages.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }]
+  }));
+
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, max_tokens: maxTokens })
+    body: JSON.stringify({
+      contents,
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.3 }
+    })
   });
   const data = await res.json();
-  if(data.error) throw new Error(data.error);
-  return data.content[0].text;
+  if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data.candidates[0].content.parts[0].text;
 }
 
 // HISTORY
@@ -465,28 +480,38 @@ async function startStudy(){
   document.getElementById('study-btn').disabled = true;
 
   const depthMap = {
-    basic: 'Give a concise overview with 3 to 5 key points only. Keep it brief.',
-    intermediate: 'Give a thorough explanation covering all important concepts, definitions, examples, and key facts.',
-    deep: 'Give an in-depth, detailed explanation covering all concepts, background, examples, common misconceptions, and real-world applications.'
+    basic: 'Give a concise but accurate overview with the 4-6 most important key points. Include a definition, core idea, and one clear example. Keep it brief but factually correct.',
+    intermediate: 'Give a thorough, accurate explanation covering: definition, historical context or background (if relevant), all important concepts and sub-topics, real examples, and key facts a student must know for an exam.',
+    deep: 'Give a comprehensive, expert-level explanation covering: full definition, origin/history, all major concepts and sub-topics with detailed explanations, multiple real-world examples, common misconceptions corrected, practical applications, and anything a student needs to fully master this topic.'
   };
 
-  const prompt = `You are an expert tutor. Teach the following topic clearly and engagingly.
+  const notes = document.getElementById('notes').value.trim();
+
+  const prompt = `You are a highly accurate and knowledgeable expert tutor with deep expertise in all academic subjects. Your goal is to teach the topic with 100% factual accuracy — never guess or fabricate information.
 
 TOPIC: ${topic}
-${document.getElementById('notes').value.trim() ? 'EXTRA CONTEXT:\n' + document.getElementById('notes').value.trim() : ''}
-DEPTH: ${depthMap[depth]}
+${notes ? 'STUDENT NOTES / EXTRA CONTEXT (prioritize this):\n' + notes : ''}
+INSTRUCTION: ${depthMap[depth]}
 
-Format using:
-- ### for section headers
-- **text** for important terms
-- *text* for key highlights
-- bullet points with -
-- \`code\` for formulas or technical terms
+RULES FOR ACCURACY:
+- Only state facts you are certain about
+- If a topic has multiple accepted theories, mention them
+- Use precise academic language for definitions
+- Include specific names, dates, formulas, or data where relevant
+- Correct common misconceptions if any exist about this topic
 
-Be friendly, clear, and educational like a real tutor.`;
+FORMAT:
+- ### for main section headers
+- **bold** for key terms and important facts
+- *italic* for highlights and examples
+- bullet points with - for lists
+- \`backticks\` for formulas, equations, or technical terms
+- Numbered lists for steps or sequences
+
+Write like an expert professor who genuinely wants the student to deeply understand and remember this topic.`;
 
   try {
-    const text = await callAI([{role:'user', content:prompt}], 2000);
+    const text = await callAI([{role:'user', content:prompt}], 4000);
     currentLesson = text;
     renderLesson(topic, text, depth);
     addHistory(topic);
@@ -540,24 +565,35 @@ async function startQuiz(){
 
   const typeDesc = types.map(t=>t==='mc'?'Multiple Choice':t==='tf'?'True or False':'Identification').join(', ');
 
-  const prompt = `Generate exactly ${count} quiz questions about: "${currentTopic}"
-${currentLesson ? 'Based on:\n' + currentLesson.slice(0,1500) : ''}
+  const prompt = `You are an expert exam writer and subject matter specialist. Generate exactly ${count} high-quality quiz questions about the topic below. Every question and answer must be 100% factually accurate.
 
-Types: ${typeDesc} — distribute evenly.
+TOPIC: "${currentTopic}"
+${currentLesson ? 'LESSON CONTENT (base your questions on this):\n' + currentLesson.slice(0,2000) : ''}
 
-Return ONLY valid JSON, no markdown, no explanation:
+QUESTION TYPES TO USE: ${typeDesc} — distribute evenly across types.
+
+STRICT ACCURACY RULES:
+- Every answer must be definitively correct — no ambiguous answers
+- For True/False: only make statements that are clearly and unambiguously true or false
+- For Multiple Choice: wrong options must be clearly wrong, correct answer must be unquestionably right
+- For Identification: accept the most standard/common correct term
+- Base questions on established facts, not opinions
+- Vary difficulty: include easy, medium, and hard questions
+- Explanations must clearly justify why the answer is correct
+
+Return ONLY valid JSON with no markdown, no extra text:
 {
   "questions": [
     {"type":"mc","question":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","explanation":"..."},
-    {"type":"tf","question":"...","answer":"True","explanation":"..."},
-    {"type":"id","question":"...","answer":"short answer","explanation":"..."}
+    {"type":"tf","question":"[Clear factual statement that is definitively true or false]","answer":"True","explanation":"This is true because..."},
+    {"type":"id","question":"...","answer":"exact term","explanation":"..."}
   ]
 }
 
-Rules: mc has 4 options A-D, answer is letter only. tf answer is "True" or "False". id answer is 1-5 words. Vary difficulty.`;
+Rules: mc has exactly 4 options A-D, answer is the letter only (A/B/C/D). tf answer is exactly "True" or "False". id answer is 1-4 words maximum.`;
 
   try {
-    let raw = await callAI([{role:'user',content:prompt}], 2000);
+    let raw = await callAI([{role:'user',content:prompt}], 4000);
     raw = raw.replace(/```json|```/g,'').trim();
     const parsed = JSON.parse(raw);
     quizData = parsed.questions;
